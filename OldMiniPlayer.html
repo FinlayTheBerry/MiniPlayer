@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Custom YouTube-style HTML5 Player</title>
+    <title>MiniPlayer</title>
     <link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet">
     <style>
         :root {
@@ -101,11 +101,13 @@
         /* Progress Bar */
         .timeline-container {
             height: 4px;
-            margin-bottom: 8px;
             cursor: pointer;
             display: flex;
             align-items: center;
             position: relative;
+            border-top: 10px solid transparent;
+            border-bottom: 10px solid transparent;
+            background-clip: padding-box;
         }
 
         .timeline-container:hover {
@@ -214,7 +216,8 @@
         .volume-slider::-webkit-slider-runnable-track {
             width: 100%;
             height: 3px;
-            background: rgba(255,255,255,0.3);
+            background: var(--track-bg, rgba(255,255,255,0.3)); /* Dynamically injected via JS */
+            border-radius: 2px;
         }
 
         .volume-slider::-webkit-slider-thumb {
@@ -229,7 +232,8 @@
         .volume-slider::-moz-range-track {
             width: 100%;
             height: 3px;
-            background: rgba(255,255,255,0.3);
+            background: var(--track-bg, rgba(255,255,255,0.3));
+            border-radius: 2px;
         }
         .volume-slider::-moz-range-thumb {
             height: 12px;
@@ -302,7 +306,7 @@
 
         /* Custom Context Menu styling - Updated with transparency, rounding, and blur */
         .custom-context-menu {
-            position: absolute;
+            position: fixed; /* Changed from absolute to fixed */
             background: rgba(21, 21, 21, 0.75);
             backdrop-filter: blur(8px);
             -webkit-backdrop-filter: blur(8px);
@@ -316,7 +320,7 @@
             flex-direction: column;
             font-size: 13px;
             color: #eeeeee;
-            overflow: hidden; /* Ensures item hover colors stay within the rounded corners */
+            overflow: hidden; 
         }
 
         .context-menu-item {
@@ -352,18 +356,16 @@
     <div class="video-container" id="videoContainer">
         <div class="custom-context-menu" id="customContextMenu">
             <div class="context-menu-item" id="ctxLoop">Enable Loop</div>
-            <div class="context-menu-item" id="ctxResetSpeed">Reset speed (1x)</div>
-            <div class="context-menu-item" id="ctxCopyUrl">Copy video URL at current time</div>
+            <div class="context-menu-item" id="ctxResetSpeed">Reset Speed (1x)</div>
+            <div class="context-menu-item" id="ctxCopyUrl">Copy Video URL at Current Time</div>
             <div class="context-menu-item" id="ctxMute">Mute</div>
             <div class="context-menu-item" id="ctxFullscreen">Fullscreen</div>
         </div>
 
         <div class="status-overlay" id="statusOverlay">
-            <span class="material-icons" id="statusIcon">play_arrow</span>
-            <span id="statusText">Paused</span>
         </div>
 
-        <video id="mainVideo" src="" preload="metadata" playsinline></video>
+        <video id="mainVideo" preload="metadata" playsinline></video>
 
         <div class="video-controls-wrapper" id="controlsWrapper">
             
@@ -458,8 +460,6 @@
         const timelineHandle = document.getElementById("timelineHandle");
 
         const statusOverlay = document.getElementById("statusOverlay");
-        const statusIcon = document.getElementById("statusIcon");
-        const statusText = document.getElementById("statusText");
 
         // Context menu DOM hooks
         const contextMenu = document.getElementById("customContextMenu");
@@ -520,11 +520,10 @@
         const FRAME_TIME = 1 / 24; 
 
         // --- Overlay Notification Engine ---
-        function showNotification(text, iconName) {
-            statusIcon.innerText = iconName;
-            statusText.innerText = text;
+        function showNotification(messageHtml) {
+            statusOverlay.innerHTML = messageHtml;
             statusOverlay.classList.remove("show");
-            void statusOverlay.offsetWidth; // Force reflow
+            void statusOverlay.offsetWidth;
             statusOverlay.classList.add("show");
             
             clearTimeout(statusOverlay.timeout);
@@ -535,24 +534,37 @@
 
         function handleAccumulatedSkip(seconds) {
             clearTimeout(skipTimeout);
+            if (Math.sign(seconds) != Math.sign(skipAccumulator)) {
+                skipAccumulator = 0;
+            }
             skipAccumulator += seconds;
             let prefix = skipAccumulator > 0 ? "+" : "";
-            showNotification(`${prefix}${skipAccumulator}s`, skipAccumulator > 0 ? "fast_forward" : "fast_rewind");
+            if (skipAccumulator > 0){
+                showNotification(`+${skipAccumulator}s <span class="material-icons">fast_forward</span>`);
+            } else {
+                showNotification(`<span class="material-icons">fast_rewind</span> ${skipAccumulator}s`);
+            }
             skipTimeout = setTimeout(() => { skipAccumulator = 0; }, 600);
         }
 
         // --- Core Play/Pause/Replay Logic ---
-        function togglePlay() {
+        function togglePlay(silent) {
             if (video.ended) {
                 video.currentTime = 0;
                 video.play();
-                showNotification("Play", "play_arrow");
+                if (!silent) {
+                    showNotification(`<span class="material-icons">play_arrow</span>`);
+                }
             } else if (video.paused) {
                 video.play();
-                showNotification("Play", "play_arrow");
+                if (!silent) {
+                    showNotification(`<span class="material-icons">play_arrow</span>`);
+                }    
             } else {
                 video.pause();
-                showNotification("Pause", "pause");
+                if (!silent) {
+                    showNotification(`<span class="material-icons">pause</span>`);
+                }
             }
             updatePlayIcon();
         }
@@ -575,8 +587,8 @@
         video.addEventListener("pause", updatePlayIcon);
         video.addEventListener("ended", updatePlayIcon);
 
-        playPauseBtn.addEventListener("click", togglePlay);
-        video.addEventListener("click", togglePlay);
+        playPauseBtn.addEventListener("click", () => { togglePlay(true); });
+        video.addEventListener("click", () => { togglePlay(false); });
 
         // --- Persistent Hover Volume Expansion Engine ---
         muteBtn.addEventListener("mouseenter", () => {
@@ -587,51 +599,75 @@
             volumeWrapper.classList.remove("expanded");
         });
 
-        function updateVolumeUI(volume, isMuted) {
-            volumeSlider.value = isMuted ? 0 : volume;
+        function updateVolumeUI() {
+            const currentVal = video.muted ? 0 : video.volume;
+            volumeSlider.value = currentVal;
+
+            const percentage = currentVal * 100;
+            volumeSlider.style.setProperty("--track-bg", `linear-gradient(to right, #fff ${percentage}%, rgba(255,255,255,0.2) ${percentage}%)`);
+
             let icon = "volume_down";
-            if (isMuted || volume === 0) {
+            if (video.muted || video.volume == 0) {
                 icon = "volume_off";
-            } else if (volume === 1) {
+            } else if (video.volume == 1) {
                 icon = "volume_up";
             }
             muteBtn.querySelector(".material-icons").innerText = icon;
-            // Sync context menu text dynamically
-            ctxMute.innerText = (isMuted || volume === 0) ? "Unmute" : "Mute";
+            ctxMute.innerText = (video.muted || video.volume == 0) ? "Unmute" : "Mute";
         }
-
-        function toggleMute() {
-            video.muted = !video.muted;
-            updateVolumeUI(video.volume, video.muted);
-            showNotification(`${Math.round(video.muted ? 0 : video.volume * 100)}%`, video.muted ? "volume_off" : "volume_up");
+        function toggleMute(silent) {
+            if (video.volume == 0) {
+                video.muted = false;
+                video.volume = 1;
+            } else {
+                video.muted = !video.muted;
+            }
+            updateVolumeUI();
+            if (!silent) {
+                if (video.muted || video.volume == 0) {
+                    showNotification(`<span class="material-icons">volume_off</span> 0%`);
+                } else {
+                    showNotification(`<span class="material-icons">volume_up</span> ${Math.round(video.volume * 100)}%`);
+                }
+            }
         }
-
         function changeVolume(delta) {
             video.muted = false;
             let newVol = Math.min(1, Math.max(0, video.volume + delta));
             video.volume = Math.round(newVol * 100) / 100;
-            updateVolumeUI(video.volume, video.muted);
-            showNotification(`${Math.round(video.volume * 100)}%`, video.volume === 0 ? "volume_off" : "volume_up");
+            updateVolumeUI();
+            if (video.muted || video.volume == 0) {
+                showNotification(`<span class="material-icons">volume_off</span> ${Math.round(video.volume * 100)}%`);
+            } else {
+                showNotification(`<span class="material-icons">volume_up</span> ${Math.round(video.volume * 100)}%`);
+            }
         }
 
-        muteBtn.addEventListener("click", toggleMute);
+        muteBtn.addEventListener("click", () => { toggleMute(true); });
         volumeSlider.addEventListener("input", (e) => {
             video.volume = e.target.value;
-            video.muted = (video.volume === 0);
-            updateVolumeUI(video.volume, video.muted);
+            video.muted = (video.volume == 0);
+            updateVolumeUI();
         });
 
         volumeSlider.addEventListener("keydown", (e) => {
-            if(e.key === "ArrowLeft" || e.key === "ArrowRight" || e.key === "ArrowUp" || e.key === "ArrowDown") {
+            if(e.key == "ArrowLeft" || e.key == "ArrowRight" || e.key == "ArrowUp" || e.key == "ArrowDown") {
                 e.preventDefault();
             }
         });
 
         // --- Timeline Tracker & Debounced Scrubber System ---
         function formatTime(seconds) {
-            const mins = Math.floor(seconds / 60);
+            const hrs = Math.floor(seconds / 3600);
+            const mins = Math.floor((seconds % 3600) / 60);
             const secs = Math.floor(seconds % 60);
-            return `${mins}:${secs < 10 ? "0" : ""}${secs}`;
+            const formattedSecs = secs.toString().padStart(2, '0');
+            if (hrs > 0) {
+                const formattedMins = mins.toString().padStart(2, '0');
+                return `${hrs}:${formattedMins}:${formattedSecs}`;
+            } else {
+                return `${mins}:${formattedSecs}`;
+            }
         }
 
         function updateTimeline() {
@@ -687,18 +723,19 @@
 
         // --- Playback Speed System ---
         function setPlaybackRate(rate, silent) {
-            rate = Math.min(4, Math.max(0.25, rate));
+            rate = Math.min(2, Math.max(0.25, rate));
             video.playbackRate = rate;
             if (!silent) {
-                showNotification(`${rate}x`, "speed");
+                showNotification(`<span class="material-icons">speed</span> ${rate}x`);
             }
             
             document.querySelectorAll(".speed-option").forEach(opt => {
-                if(parseFloat(opt.dataset.speed) === rate) opt.classList.add("active");
+                if(parseFloat(opt.dataset.speed) == rate) opt.classList.add("active");
                 else opt.classList.remove("active");
             });
         }
         setPlaybackRate(1.0, true);
+        updateVolumeUI();
 
         speedMenuBtn.addEventListener("click", (e) => {
             e.stopPropagation();
@@ -720,7 +757,7 @@
             loopBtn.classList.toggle("btn-active", video.loop);
             ctxLoop.innerText = video.loop ? "Disable Loop" : "Enable Loop";
             if (!silent) {
-                showNotification(video.loop ? "Loop Enabled" : "Loop Disabled", "repeat");
+                showNotification(`<span class="material-icons">repeat</span> ${video.loop ? "Loop Enabled" : "Loop Disabled"}`);
             }
             updatePlayIcon();
         }
@@ -775,67 +812,75 @@
 
         // --- Custom Context Menu Engine ---
         container.addEventListener("contextmenu", (e) => {
-            e.preventDefault(); // Block browser"s ugly default context box
-
-            // Position calculation relative to player container layout boundary boundaries
-            const containerRect = container.getBoundingClientRect();
-            let leftPos = e.clientX - containerRect.left;
-            let topPos = e.clientY - containerRect.top;
-
-            // Simple collision buffer window prevent overflow off player screen margins
-            if (leftPos + 220 > containerRect.width) leftPos = containerRect.width - 220;
-            if (topPos + 200 > containerRect.height) topPos = containerRect.height - 200;
-
+            if (contextMenu.style.display === "flex") {
+                contextMenu.style.display = "none";
+                return; // Exits without calling preventDefault()
+            }
+        
+            e.preventDefault(); // Block browser's default context box for the first click
+        
+            let leftPos = e.clientX;
+            let topPos = e.clientY;
+        
+            // Smart collision logic checking against total window viewport limits (220px width / 210px estimated height)
+            if (leftPos + 220 > window.innerWidth) leftPos = window.innerWidth - 220;
+            if (topPos + 210 > window.innerHeight) topPos = window.innerHeight - 210;
+        
+            // Keep safe positive numbers
+            leftPos = Math.max(0, leftPos);
+            topPos = Math.max(0, topPos);
+        
             contextMenu.style.left = `${leftPos}px`;
             contextMenu.style.top = `${topPos}px`;
             contextMenu.style.display = "flex";
         });
 
-        // Hide menus if user clicks completely off option scope
-        document.addEventListener("click", () => {
-            contextMenu.style.display = "none";
-            speedMenu.classList.remove("show");
-        });
+        window.addEventListener("click", (e) => {
+            if (contextMenu.style.display === "flex") {
+                // If the user clicked specifically on an actual item inside the context menu, let that run
+                if (contextMenu.contains(e.target)) {
+                    return;
+                }
 
-        // Right click feature handlers with full confirmation hooks
+                // Otherwise, intercept and block the action from clicking underlying player buttons
+                e.preventDefault();
+                e.stopPropagation();
+                contextMenu.style.display = "none";
+            }
+            speedMenu.classList.remove("show");
+        }, true); // Setting 'true' forces the event to fire in the capturing phase instead of bubbling
+
+        // Right-click feature option items logic (Updated with clean event cleanup loops)
         ctxLoop.addEventListener("click", (e) => {
-            e.stopPropagation();
-            toggleLoop(false);
+            toggleLoop(true);
             contextMenu.style.display = "none";
         });
 
         ctxResetSpeed.addEventListener("click", (e) => {
-            e.stopPropagation();
-            setPlaybackRate(1.0, false);
+            setPlaybackRate(1.0, true);
             contextMenu.style.display = "none";
         });
 
         ctxMute.addEventListener("click", (e) => {
-            e.stopPropagation();
-            toggleMute();
+            toggleMute(true);
             contextMenu.style.display = "none";
         });
 
         ctxFullscreen.addEventListener("click", (e) => {
-            e.stopPropagation();
             toggleFullscreen();
             contextMenu.style.display = "none";
         });
 
         ctxCopyUrl.addEventListener("click", async (e) => {
-            e.stopPropagation();
             contextMenu.style.display = "none";
-            
             try {
-                // Parse address cleanly and append precision timestamps
                 const url = new URL(window.location.href);
                 url.searchParams.set("t", video.currentTime.toFixed(2));
-                
                 await navigator.clipboard.writeText(url.toString());
-                showNotification("URL Copied with Time!", "link");
+                showNotification(`<span class="material-icons">link</span> URL Copied with Time!`);
             } catch (err) {
                 console.error("Failed to write link data to clipboard", err);
-                showNotification("Copy Failed", "error");
+                showNotification(`<span class="material-icons">error</span> Copy Failed`);
             }
         });
 
@@ -846,7 +891,7 @@
             switch (e.key) {
                 case " ":
                     e.preventDefault();
-                    togglePlay();
+                    togglePlay(false);
                     break;
                 case "ArrowUp":
                     e.preventDefault();
@@ -869,13 +914,13 @@
                 case ",": 
                     if (video.paused) {
                         video.currentTime = Math.max(0, video.currentTime - FRAME_TIME);
-                        showNotification("Prev Frame", "skip_previous");
+                        showNotification(`<span class="material-icons">skip_previous</span> Prev Frame`);
                     }
                     break;
                 case ".": 
                     if (video.paused) {
                         video.currentTime = Math.min(video.duration, video.currentTime + FRAME_TIME);
-                        showNotification("Next Frame", "skip_next");
+                        showNotification(`Next Frame <span class="material-icons">skip_next</span>`);
                     }
                     break;
                 case "<":
@@ -887,28 +932,28 @@
                 case "Home":
                     e.preventDefault();
                     video.currentTime = 0;
-                    showNotification("Start", "first_page");
+                    showNotification(`<span class="material-icons">first_page</span> Start`);
                     break;
                 case "End":
                     e.preventDefault();
                     video.currentTime = video.duration || 0;
-                    showNotification("End", "last_page");
+                    showNotification(`<span class="material-icons">last_page</span> End`);
                     break;
             }
 
-            if (key === "f") {
+            if (key == "f") {
                 toggleFullscreen();
-            } else if (key === "i") {
+            } else if (key == "i") {
                 if (!isFirefox) togglePiP();
-            } else if (key === "l") {
+            } else if (key == "l") {
                 toggleLoop(false);
-            } else if (key === "m") {
-                toggleMute();
+            } else if (key == "m") {
+                toggleMute(false);
             } else if (/^[0-9]$/.test(key)) {
                 if (video.duration) {
                     const percentageValue = parseInt(key) * 10;
                     video.currentTime = (percentageValue / 100) * video.duration;
-                    showNotification(`${percentageValue}%`, "shortcut");
+                    showNotification(`<span class="material-icons">shortcut</span> ${percentageValue}%`);
                 }
             }
             
