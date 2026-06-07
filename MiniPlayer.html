@@ -406,23 +406,64 @@
            Mobile Specific UI Overrides (Triggered when .mobile-mode is attached)
            ========================================================================== */
         .mobile-mode .control-btn .material-icons {
-            font-size: 32px; /* Enlarge icons for visibility & thumb-targeting */
+            font-size: 32px;
         }
 
         .mobile-mode .timeline-container {
-            height: 6px; /* Slightly thicker scrubbing rail */
+            height: 6px;
         }
 
         .mobile-mode .timeline-handle {
-            transform: translate(-50%, -50%) scale(1); /* Keep the timeline knob visible at all times */
+            transform: translate(-50%, -50%) scale(1);
         }
 
         .mobile-mode .volume-slider-wrapper {
-            display: none !important; /* Stripped out for a basic binary mute toggle */
+            display: none !important;
         }
 
         .mobile-mode #playPauseBtn {
-            display: none !important; /* Handled by the central overlay instead */
+            display: none !important;
+        }
+
+        #previewContainer {
+            position: absolute;
+            bottom: 46px; 
+            transform: translateX(-50%);
+            background: rgba(0, 0, 0, 0.85);
+            border: 1.5px solid rgba(255, 255, 255, 0.4);
+            border-radius: 4px;
+            padding: 0.5%; /* Fluid scaling padding */
+            pointer-events: none;
+            z-index: 30;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+            
+            /* Dynamically scale the width to be 30% of the player's width */
+            width: 30%;
+            /* Set safety guardrails so it doesn't get unreadably small or comically massive */
+            min-width: 100px;
+            max-width: 300px; 
+        }
+        
+        #previewThumbnail {
+            width: 100%;
+            /* Maintain a perfect 16:9 window regardless of current fluid width */
+            aspect-ratio: 16 / 9; 
+            background-repeat: no-repeat;
+            /* Crucial: Scales the 10x10 matrix sheet to be exactly 1000% of the thumbnail container size */
+            background-size: 1000% 1000%;
+            background-color: #000;
+            border-radius: 2px;
+        }
+
+        #previewTime {
+            font-size: 12px;
+            color: #fff;
+            margin-top: 3px;
+            font-weight: 500;
+            text-shadow: 0 1px 2px #000;
         }
     </style>
 </head>
@@ -446,6 +487,11 @@
             <span class="material-icons">play_arrow</span>
         </button>
 
+        <div id="previewContainer" class="is-hidden">
+            <div id="previewThumbnail"></div>
+            <div id="previewTime">0:00</div>
+        </div>
+
         <video id="mainVideo" preload="metadata" playsinline></video>
 
         <div class="video-controls-wrapper" id="controlsWrapper">
@@ -457,7 +503,7 @@
                 </div>
             </div>
 
-            <div class="controls-row">
+            <div id="controlsRow" class="controls-row">
                 <div class="controls-left">
                     <button class="control-btn" id="playPauseBtn" title="Play (space)">
                         <span class="material-icons">play_arrow</span>
@@ -536,6 +582,7 @@
         const speedMenuBtn = document.getElementById("speedMenuBtn");
         const speedMenu = document.getElementById("speedMenu");
         const fullscreenBtn = document.getElementById("fullscreenBtn");
+        const controlsRow = document.getElementById("controlsRow");
 
         const timelineContainer = document.getElementById("timelineContainer");
         const timelineProgress = document.getElementById("timelineProgress");
@@ -553,6 +600,11 @@
         const ctxMute = document.getElementById("ctxMute");
         const ctxFullscreen = document.getElementById("ctxFullscreen");
 
+        // --- Hover Scrub Preview Engine ---
+        const previewContainer = document.getElementById("previewContainer");
+        const previewThumbnail = document.getElementById("previewThumbnail");
+        const previewTime = document.getElementById("previewTime");
+
         const videoSrcUrlObj = new URL(videoSrc, window.location.href);
         document.getElementById("backToEpisodesLink").href = `${videoSrcUrlObj.origin}${videoSrcUrlObj.pathname.substring(0, videoSrcUrlObj.pathname.lastIndexOf("/"))}/`;
         document.getElementById("browserPlayerLink").href = videoSrc;
@@ -564,8 +616,6 @@
         }
 
         // --- Client Environment Profiler (Mobile Context Engine) ---
-        // Checks standard mobile UA signatures AND verifies real device touch capability.
-        // If "Show Desktop Site" is checked, touch tracking can match but UA profiling drops out, reverting neatly to Desktop UI.
         const isMobileUA = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
         const hasTouchCapability = ('ontouchstart' in window) || (navigator.maxTouchPoints > 0);
         let isMobileMode = isMobileUA && hasTouchCapability;
@@ -583,13 +633,78 @@
             console.log("Desktop Mode");
         }
 
-        // --- Dismiss Context Menu when switching tabs or losing window focus ---
+        // Generate .scrub.jpg URL based on the incoming video source 
+        let scrubImageUrl = "";
+        if (videoSrc) {
+            const baseVideoUrl = videoSrc.split('?')[0];
+            const lastDotIndex = baseVideoUrl.lastIndexOf('.');
+            if (lastDotIndex !== -1) {
+                scrubImageUrl = baseVideoUrl.substring(0, lastDotIndex) + ".scrub.jpg";
+                previewThumbnail.style.backgroundImage = `url('${scrubImageUrl}')`;
+
+                // Force immediate high-priority network prefetch
+                const preloadLink = document.createElement("link");
+                preloadLink.rel = "preload";
+                preloadLink.as = "image";
+                preloadLink.href = scrubImageUrl;
+                document.head.appendChild(preloadLink);
+            }
+        }
+
+        function updatePreview(e) {
+            if (!video.duration || !scrubImageUrl || isMobileMode || true) return; // TODO FIX THIS
+        
+            const rect = timelineContainer.getBoundingClientRect();
+            const clientX = e.clientX;
+            const pos = Math.min(1, Math.max(0, (clientX - rect.left) / rect.width));
+
+            // Fixed Position Bug: Calculate dynamic coordinates relative to master video player container borders
+            const containerRect = container.getBoundingClientRect();
+            const relativeLeft = clientX - containerRect.left;
+            
+            // Constrain container preview box safely using its dynamic current width
+            const previewRect = previewContainer.getBoundingClientRect();
+            const halfPreviewWidth = previewRect.width / 2;
+            const secureLeft = Math.min(containerRect.width - halfPreviewWidth, Math.max(halfPreviewWidth, relativeLeft));
+
+            previewContainer.style.left = `${secureLeft}px`;
+            previewContainer.classList.remove("is-hidden");
+        
+            // Calculate total layout frame index (0 to 99)
+            const totalFrames = 100; 
+            let frameIndex = Math.floor(pos * (totalFrames - 1));
+            frameIndex = Math.min(totalFrames - 1, Math.max(0, frameIndex));
+        
+            // Determine row and column offsets inside the 10x10 sheet matrix
+            const cols = 10;
+            const frameWidth = 256;
+            const frameHeight = 144;
+            const col = frameIndex % cols;
+            const row = Math.floor(frameIndex / cols);
+        
+            // Shift background properties inversely to project correct thumbnail
+            previewThumbnail.style.backgroundPosition = `-${col * frameWidth}px -${row * frameHeight}px`;
+
+            // Sync text preview timestamp
+            const targetTime = pos * video.duration;
+            previewTime.innerText = formatTime(targetTime);
+        }
+
+        // Attach listeners to timeline container track
+        timelineContainer.addEventListener("mousemove", updatePreview);
+        timelineContainer.addEventListener("mouseenter", () => {
+            if (!isMobileMode && scrubImageUrl && false) previewContainer.classList.remove("is-hidden"); // TODO FIX THIS
+        });
+        timelineContainer.addEventListener("mouseleave", () => {
+            previewContainer.classList.add("is-hidden");
+        });
+
+        // Dismiss Context Menu
         window.addEventListener("blur", () => {
             contextMenu.style.display = "none";
             speedMenu.classList.remove("show");
             if (isMobileMode) {
                 longPressDetected = false;
-
                 if (is2xSpeedActive) {
                     is2xSpeedActive = false;
                     video.playbackRate = pre2xSpeedSetting;
@@ -630,10 +745,9 @@
         let pre2xSpeedSetting = 1.0;
         let is2xSpeedActive = false;
 
-        // FPS constant for frame-by-frame controls (assuming standard 24fps)
         const FRAME_TIME = 1 / 24;
 
-        // --- Overlay Notification Engine ---
+        // Overlay Notification Engine
         function showNotification(messageHtml) {
             statusOverlay.innerHTML = messageHtml;
             statusOverlay.classList.remove("show");
@@ -660,7 +774,6 @@
             skipTimeout = setTimeout(() => { skipAccumulator = 0; }, 600);
         }
 
-        // --- Core Play/Pause/Replay Logic ---
         function togglePlay(silent) {
             if (video.ended) {
                 video.currentTime = 0;
@@ -711,16 +824,14 @@
 
         playPauseBtn.addEventListener("click", () => { togglePlay(true); });
         mobileCenterPlayBtn.addEventListener("click", (e) => {
-            e.stopPropagation(); // Avoid triggering container-level touch mechanics
+            e.stopPropagation();
             togglePlay(true);
         });
 
-        // Desktop click handling fallback
         video.addEventListener("click", () => {
             if (!isMobileMode) togglePlay(false);
         });
 
-        // --- Persistent Hover Volume Expansion Engine ---
         muteBtn.addEventListener("mouseenter", () => {
             if (!isMobileMode) volumeWrapper.classList.add("expanded");
         });
@@ -786,7 +897,6 @@
             }
         });
 
-        // --- Timeline Tracker & Debounced Scrubber System ---
         function formatTime(seconds) {
             const hrs = Math.floor(seconds / 3600);
             const mins = Math.floor((seconds % 3600) / 60);
@@ -819,7 +929,6 @@
         let renderFrameDebounce;
         function scrubTimeline(e) {
             const rect = timelineContainer.getBoundingClientRect();
-            // Pull coordinates handling touch points dynamically
             const clientX = e.touches ? e.touches[0].clientX : e.clientX;
             const pos = Math.min(1, Math.max(0, (clientX - rect.left) / rect.width));
 
@@ -846,7 +955,6 @@
             updateTimeline();
         });
 
-        // Desktop click scrubbing
         timelineContainer.addEventListener("mousedown", (e) => {
             isScrubbing = true;
             scrubTimeline(e);
@@ -854,7 +962,6 @@
         document.addEventListener("mousemove", (e) => { if (isScrubbing) scrubTimeline(e); });
         document.addEventListener("mouseup", () => { isScrubbing = false; });
 
-        // Mobile touch scrubbing compatibility
         timelineContainer.addEventListener("touchstart", (e) => {
             isScrubbing = true;
             scrubTimeline(e);
@@ -862,7 +969,6 @@
         document.addEventListener("touchmove", (e) => { if (isScrubbing) scrubTimeline(e); }, { passive: true });
         document.addEventListener("touchend", () => { isScrubbing = false; });
 
-        // --- Playback Speed System ---
         function setPlaybackRate(rate, silent) {
             rate = Math.min(2, Math.max(0.25, rate));
             video.playbackRate = rate;
@@ -890,7 +996,6 @@
             });
         });
 
-        // --- Loop, PiP & Fullscreen Utilities ---
         function toggleLoop(silent) {
             video.loop = !video.loop;
             loopBtn.classList.toggle("btn-active", video.loop);
@@ -930,21 +1035,22 @@
             ctxFullscreen.innerText = isFS ? "Exit Fullscreen" : "Fullscreen";
             if (isMobileMode) {
                 if (isFS && screen.orientation && typeof screen.orientation.lock === "function") {
-                    await screen.orientation.lock("landscape");
+                    controlsRow.style.padding = "0px 15px";
+                    await screen.orientation.lock("landscape-primary");
                 } else if (!isFS && screen.orientation && typeof screen.orientation.unlock === "function") {
+                    controlsRow.style.padding = "0px 0px";
                     screen.orientation.unlock();
                 }
             }
         });
 
-        // --- Interface Hiding Inactivity Handler (PC Engine) ---
         function hideControls() {
             clearTimeout(controlsTimeout);
             container.classList.remove("show-controls");
         }
 
         function resetControlsTimer() {
-            if (isMobileMode) return; // Completely bypassed in favor of persistent touch toggles
+            if (isMobileMode) return;
             container.classList.add("show-controls");
             clearTimeout(controlsTimeout);
             controlsTimeout = setTimeout(hideControls, 5000);
@@ -958,7 +1064,6 @@
             controlsTimeout = setTimeout(hideControls, 100);
         });
 
-        // --- Custom Context Menu Engine ---
         container.addEventListener("contextmenu", (e) => {
             if (contextMenu.style.display === "flex") {
                 contextMenu.style.display = "none";
@@ -966,10 +1071,7 @@
             }
 
             e.preventDefault();
-
-            if (isMobileMode) {
-                return;
-            }
+            if (isMobileMode) return;
 
             let leftPos = e.clientX;
             let topPos = e.clientY;
@@ -999,7 +1101,6 @@
             speedMenu.classList.remove("show");
         });
 
-        // Right-click feature option items logic
         ctxLoop.addEventListener("click", (e) => {
             toggleLoop(true);
             contextMenu.style.display = "none";
@@ -1033,7 +1134,6 @@
             }
         });
 
-        // --- Hotkeys Keyboard Engine ---
         document.addEventListener("keydown", (e) => {
             const key = e.key.toLowerCase();
 
@@ -1109,13 +1209,11 @@
             if (!isMobileMode) resetControlsTimer();
         });
 
-        // ==========================================================================
-        // Advanced Mobile Input Processing Engine (Gestures, Speed-Hold, Multi-Tap Stack)
-        // ==========================================================================
+        // Mobile Gestures Engine
         if (isMobileMode) {
             let lastTapTime = 0;
             let lastSkipTime = 0;
-            let tapCount = 0; // Tracks consecutive taps in the current window
+            let tapCount = 0;
             let touchStartTimeout = null;
             let longPressDetected = false;
 
@@ -1133,14 +1231,12 @@
                 const touchX = e.clientX - rect.left;
                 const isRightSide = touchX > (rect.width / 2);
 
-                // Multi-tap sequence window (400ms)
                 if (tapDelay < 400 && lastTapTime !== 0) {
                     clearTimeout(touchStartTimeout);
                     longPressDetected = false;
 
-                    tapCount++; // Move to Tap 2, Tap 3, etc.
+                    tapCount++;
 
-                    // Execute skip logic
                     if (isRightSide) {
                         video.currentTime = Math.min(video.duration, video.currentTime + 10);
                         handleAccumulatedSkip(10);
@@ -1151,22 +1247,18 @@
                         triggerRipple(rippleLeft);
                     }
 
-                    // SPECIFIC REQ: On exactly the second tap, force close the UI controls
                     if (tapCount === 2) {
                         container.classList.remove("show-controls");
                     }
-                    // Taps 3, 4, etc. bypass UI manipulation entirely
 
                     lastSkipTime = currentTime;
                     lastTapTime = currentTime;
                     return;
                 }
 
-                // If the 400ms window expired, reset sequence tracking back to Tap 1
                 tapCount = 1;
                 lastTapTime = currentTime;
 
-                // Setup listener tracking for 2x press-and-hold delay
                 longPressDetected = false;
                 touchStartTimeout = setTimeout(() => {
                     container.classList.remove("show-controls");
@@ -1209,7 +1301,6 @@
                 }
             });
 
-            // FIX 2: Handles PC testing when holding click and dragging cursor outside the player box
             container.addEventListener("pointerleave", (e) => {
                 if (!e.isPrimary) return;
 
@@ -1220,7 +1311,6 @@
                 }
             });
 
-            // Separate overlay click handler to manage simple interface toggles
             container.addEventListener("pointerdown", (e) => {
 
             });
